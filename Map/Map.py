@@ -1,85 +1,104 @@
 import folium
 import requests
+import os
 import re
 from prompt_toolkit import prompt
+from abc import ABC, abstractmethod
+
+
 from .prompt_tool import RainbowLetter,Completer
 
-def command_save(file_name, map_name):
-    russia_map = folium.Map(location=[55.7558, 37.6176], zoom_start=5)
 
-    with open(file_name, 'r') as file:
-        for line in file:
-            coordinates = line.strip().split(',')
-            if len(coordinates) != 2:
-                raise ValueError("Файл має містити координати,що складаються з двох чисел, розділені комою. Наприклад: 55.7558,37.6176")
-            lat, lon = map(float, coordinates)
+class MapBuilder(ABC):
+    @abstractmethod
+    def build_map(self):
+        pass
 
-            folium.Marker(
-                location=[lat, lon],
-                icon=folium.DivIcon(
-                    icon_size=(12, 12),
-                    html='<div style="background-color: red; width: 12px; height: 12px;"></div>'
-                ),
-                tooltip=f'Координати: {lat}, {lon}'
-            ).add_to(russia_map)
+class RussiaMapBuilder(MapBuilder):
+    def build_map(self):
+        return folium.Map(location=[55.7558, 37.6176], zoom_start=5)
 
-    russia_map.save(map_name)
-    return map_name
-    
+class MarkerFactory:
+    def create_marker(self, lat, lon):
+        return folium.Marker(
+            location=[lat, lon],
+            icon=folium.DivIcon(icon_size=(12, 12),
+                html='<div style="background-color: red; width: 12px; height: 12px;"></div>'),
+            tooltip=f'Координати: {lat}, {lon}')
 
-def input_error(func):
-    def wrapper(*args):
-        try:
-            return func(*args)
-        except UnboundLocalError:
-            return "Неправильна назва міста."
-        except ValueError:
-            return "Incorrect date format."
-    return wrapper
+class MapSaver:
+    def save_map(self, map_obj, map_name):
+        map_obj.save(map_name)
+        return map_name
+
+class FileValidator:
+    def validate_file(self, file_name):
+        with open(file_name, 'r') as file:
+            for line in file:
+                coordinates = line.strip().split(',')
+                if len(coordinates) != 2:
+                    raise ValueError("Файл має містити координати,що складаються з двох чисел, \
+                                     розділені комою. Наприклад: 55.7558,37.6176")
 
 
-@input_error
 def get_coordinates(city_name):
     api_key = "5cef6f4446b24817a8ebc8c727403c0a" 
     base_url = "https://api.opencagedata.com/geocode/v1/json"
-    
-    params = { "q": city_name,"key": api_key}
+    params = { "q": city_name, "key": api_key}
     response = requests.get(base_url, params=params)
     data = response.json()
     if data.get("results") and data["results"][0]["geometry"]:
         lat = data["results"][0]["geometry"]["lat"]
         lng = data["results"][0]["geometry"]["lng"]
-        coordinates = lat, lng
-    
-    if coordinates:
-        return f"Координати міста {city_name}: \n Широта: {lat} \n Довгота: {lng}"  
+        return lat, lng
     else:
-        return f"Не вдалося знайти координати для міста {city_name}."
+        raise ValueError(f"Не вдалося знайти координати для міста {city_name}")
 
-
-def check_coordinates(file_name, coordinates):
-    with open(file_name, 'r') as file:
-        existing_coordinates = file.readlines()
-    if coordinates in existing_coordinates:
-        return True
-    else:
-        return False
-
-
-def add_coordinates(file_name, coordinates):
-    if not check_coordinates(file_name, coordinates):
+class CoordinatesValidator:
+    def validate_coordinates(self, coordinates):
         pattern = r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$'
         if re.match(pattern, coordinates):
-            with open(file_name, 'a') as file:
-                file.write('\n'+ coordinates)
-                return f"Координати {coordinates} були додані до файлу."
+            return True
         else:
+            raise ValueError(f"Координати {coordinates} мають неправильний формат.")
 
-            return f"Координати {coordinates} мають неправильний формат."
-    else:
-        return f"Координати {coordinates} вже існують у файлі."
+class CoordinatesFileManager:
+    def read_coordinates(self, file_name):
+        with open(file_name, 'r') as file:
+            return [line.strip() for line in file.readlines()]
 
-def main(): 
+    def write_coordinates(self, file_name, coordinates):
+        with open(file_name, 'a') as file:
+            file.write('\n' + coordinates)
+
+class MapDirector:
+    def __init__(self, map_builder, marker_factory, map_saver):
+        self.map_builder = map_builder
+        self.marker_factory = marker_factory
+        self.map_saver = map_saver
+
+    def build_and_save_map(self, file_name, map_name):
+        russia_map = self.map_builder.build_map()
+        file_validator = FileValidator()
+        coordinates_validator = CoordinatesValidator()
+        coordinates_file_manager = CoordinatesFileManager()
+
+        for line in coordinates_file_manager.read_coordinates(file_name):
+            lat, lon = line.split(',')
+            coordinates_validator.validate_coordinates(line)
+            marker = self.marker_factory.create_marker(float(lat), float(lon))
+            marker.add_to(russia_map)
+
+        self.map_saver.save_map(russia_map, map_name)
+        return map_name
+
+def main():
+    map_builder = RussiaMapBuilder()
+    marker_factory = MarkerFactory()
+    map_saver = MapSaver()
+    map_director = MapDirector(map_builder, marker_factory, map_saver)
+    current_directory = os.getcwd()
+ 
     print("Вітаю. Доступні команди:")
     print("Зберегти карту ядерних обєктів країни 404 - 'save_nuclear'")
     print("Додати кординати до файлу з ядерними обєктами -'add_nuclear'")
@@ -93,29 +112,55 @@ def main():
     while True:
       
 
-        input_str = prompt("Enter command: ", completer = Completer , lexer = RainbowLetter())
-        
+        input_str = prompt("Enter your command: ", completer=Completer, lexer=RainbowLetter())
+
         if  input_str.startswith("save_nuclear"):
-            result =command_save('Personal_assistant\Map\coordinates_nuclear.txt','russia_map_nuclear.html')
-            print(f"Карта з  прапорцями збережена у файлі {result}.")  
+            try:
+                result =map_director.build_and_save_map(f"{current_directory}\Personal_assistant\Map\coordinates_nuclear.txt",
+                                                        'russia_map_nuclear.html')
+                print(f"Карта з  прапорцями збережена у файлі {result}.") 
+            except Exception as e:
+                print(f"Помилка: {str(e)}")  
+
         elif input_str.startswith("save_air"):
-            result = command_save('Personal_assistant\Map\coordinates_air.txt','russia_map_air.html')
-            print(f"Карта з  прапорцями збережена у файлі {result}.") 
+            try:
+                result = map_director.build_and_save_map(f"{current_directory}\Personal_assistant\Map\coordinates_air.txt",
+                                                         'russia_map_air.html')
+                print(f"Карта з  прапорцями збережена у файлі {result}.")
+            except Exception as e:
+                print(f"Помилка: {str(e)}") 
         elif input_str.startswith("save_admin"):
-            result =command_save('Personal_assistant\Map\coordinates_admin.txt','russia_map_admin.html')
-            print(f"Карта з  прапорцями збережена у файлі {result}.")   
+            try:
+                result =map_director.build_and_save_map(f"{current_directory}\Personal_assistant\Map\coordinates_admin.txt",
+                                                        'russia_map_admin.html')
+                print(f"Карта з  прапорцями збережена у файлі {result}.") 
+            except Exception as e:
+                print(f"Помилка: {str(e)}")   
         elif input_str == "add_nuclear":
-            input_str = input("Приклад: 55.7558,37.6176. Введіть нові кординати:")
-            print(add_coordinates('Personal_assistant\Map\coordinates_nuclear.txt', input_str))
+            try:
+                input_str = input("Приклад: 55.7558,37.6176. Введіть нові кординати:")
+                print(map_director.build_and_save_map(f"{current_directory}\Personal_assistant\Map\coordinates_nuclear.txt", 
+                                                      input_str))
+            except Exception as e:
+                print(f"Помилка: {str(e)}") 
         elif input_str == "add_air":
-            input_str = input("Приклад: 55.7558,37.6176. Введіть нові кординати:")
-            print(add_coordinates('Personal_assistant\Map\coordinates_air.txt', input_str))
+            try:
+                input_str = input("Приклад: 55.7558,37.6176. Введіть нові кординати:")
+                print(map_director.build_and_save_map(f"{current_directory}\Personal_assistant\Map\coordinates_air.txt", 
+                                                      input_str))
+            except Exception as e:
+                print(f"Помилка: {str(e)}") 
         elif input_str == "add_admin":
-            input_str = input("Приклад: 55.7558,37.6176. Введіть нові кординати:")
-            print(add_coordinates('Personal_assistant\Map\coordinates_admin.txt', input_str))
+            try:
+                input_str = input("Приклад: 55.7558,37.6176. Введіть нові кординати:")
+                print(map_director.build_and_save_map(f"{current_directory}\Personal_assistant\Map\coordinates_admin.txt",
+                                                       input_str))
+            except Exception as e:
+                print(f"Помилка: {str(e)}") 
         elif input_str == "coordinates":
             input_str = input("Приклад: Москва. Введіть назву міста:")
-            print(get_coordinates(input_str))         
+            print(get_coordinates(input_str)) 
+        
         elif input_str in ["good bye", "close", "exit"]:
             print("Good bye!")
             break
@@ -134,3 +179,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
